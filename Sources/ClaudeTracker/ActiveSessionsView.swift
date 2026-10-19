@@ -52,7 +52,7 @@ struct ActiveSessionsView: View {
 
     private func open(_ session: TrackedSession) {
         store.markRead(session.id)
-        TerminalActivator.focus(store.tabTargets(of: session))
+        TerminalActivator.focus(sessionPid: session.pid, tab: store.tabTargets(of: session))
     }
 }
 

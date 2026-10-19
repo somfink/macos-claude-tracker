@@ -4,7 +4,8 @@ import SwiftUI
 import TrackerCore
 
 /// Dev aid for checking visuals without capturing the screen:
-/// - `CLAUDE_TRACKER_SNAPSHOT=/path/dash.png` renders the dashboard with live data,
+/// - `CLAUDE_TRACKER_SNAPSHOT=/path/dash.png` renders the dashboard with live data
+///   (`CLAUDE_TRACKER_SNAPSHOT_HOME` swaps the home directory it reads, for demo data),
 /// - `CLAUDE_TRACKER_MASCOT_SNAPSHOT=/path/mascot.png` renders every mascot frame enlarged
 ///   on dark and light menu bar backgrounds,
 /// - `CLAUDE_TRACKER_ICON=/path/icon.png` renders the 1024 px app icon master.
@@ -14,6 +15,7 @@ enum DevSnapshot {
     static let dashboardKey = "CLAUDE_TRACKER_SNAPSHOT"
     static let mascotKey = "CLAUDE_TRACKER_MASCOT_SNAPSHOT"
     static let iconKey = "CLAUDE_TRACKER_ICON"
+    static let homeKey = "CLAUDE_TRACKER_SNAPSHOT_HOME"
     /// `active` (default), `finished` or `costs`.
     static let tabKey = "CLAUDE_TRACKER_SNAPSHOT_TAB"
     private static let mascotZoom: CGFloat = 8
@@ -21,9 +23,11 @@ enum DevSnapshot {
     static func runIfRequested() {
         let environment = ProcessInfo.processInfo.environment
         if let path = environment[dashboardKey] {
-            let store = SessionStore()
+            // README screenshots point this at a generated home with invented sessions.
+            let home = environment[homeKey].map { URL(filePath: $0) } ?? FileManager.default.homeDirectoryForCurrentUser
+            let store = SessionStore(home: home)
             store.refresh()
-            let usage = UsageMonitor()
+            let usage = UsageMonitor(home: home)
             usage.refreshRateLimits()
             usage.apply(waitFor { await usage.scanner.scan(roots: store.roots, sessionIds: store.snapshot.sessions.map(\.sessionId)) })
             let tab = environment[tabKey].flatMap(DashboardTab.init(rawValue:)) ?? .active

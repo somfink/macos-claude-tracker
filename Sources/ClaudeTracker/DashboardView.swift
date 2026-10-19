@@ -66,7 +66,8 @@ struct DashboardView: View {
                 .init(tab: .finished, title: "Zakończone dziś (\(usage.finishedToday.count))"),
                 .init(tab: .costs, title: "Koszty"),
             ],
-            selection: $storedTab
+            // Snapshots force a tab; the bar must highlight that one, not the remembered one.
+            selection: Binding(get: { tab }, set: { storedTab = $0 })
         )
     }
 
@@ -93,40 +94,58 @@ struct DashboardView: View {
                 .foregroundStyle(.tertiary)
                 .help(accountsHelp)
             Spacer()
-            if let notifications, notifications.blockedBySystem {
-                Button {
-                    notifications.openSystemSettings()
-                } label: {
-                    Label("Powiadomienia zablokowane", systemImage: "bell.slash.fill")
-                }
-                .foregroundStyle(.orange)
-                .help("macOS nie pokazuje powiadomień Claude Tracker. Kliknij, by otworzyć Ustawienia → Powiadomienia.")
-            } else if notifications != nil {
-                Button {
-                    notificationsEnabled.toggle()
-                } label: {
-                    Image(systemName: notificationsEnabled ? "bell.fill" : "bell.slash")
-                }
-                .help(notificationsEnabled ? "Powiadomienia włączone (prawy klik: próbne)" : "Powiadomienia wyłączone")
-                .contextMenu {
-                    Button("Wyślij próbne powiadomienie") { notifications?.postTest() }
-                }
+            if isSnapshot {
+                snapshotControls
+            } else {
+                controls
             }
-            if let launchAtLogin, launchAtLogin.isAvailable {
-                Button {
-                    launchAtLogin.toggle()
-                } label: {
-                    Image(systemName: launchAtLogin.isEnabled ? "power.circle.fill" : "power.circle")
-                }
-                .help(launchAtLoginHelp(launchAtLogin))
-            }
-            Button("Odśwież") { store.refresh() }
-                .keyboardShortcut("r")
-            Button("Zakończ") { NSApplication.shared.terminate(nil) }
-                .keyboardShortcut("q")
         }
         .buttonStyle(.borderless)
         .font(.caption)
+    }
+
+    /// ImageRenderer draws buttons as placeholders, so offscreen snapshots show plain labels.
+    private var snapshotControls: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "bell.fill")
+            Image(systemName: "power.circle.fill")
+            Text("Odśwież")
+            Text("Zakończ")
+        }
+    }
+
+    @ViewBuilder private var controls: some View {
+        if let notifications, notifications.blockedBySystem {
+            Button {
+                notifications.openSystemSettings()
+            } label: {
+                Label("Powiadomienia zablokowane", systemImage: "bell.slash.fill")
+            }
+            .foregroundStyle(.orange)
+            .help("macOS nie pokazuje powiadomień Claude Tracker. Kliknij, by otworzyć Ustawienia → Powiadomienia.")
+        } else if notifications != nil {
+            Button {
+                notificationsEnabled.toggle()
+            } label: {
+                Image(systemName: notificationsEnabled ? "bell.fill" : "bell.slash")
+            }
+            .help(notificationsEnabled ? "Powiadomienia włączone (prawy klik: próbne)" : "Powiadomienia wyłączone")
+            .contextMenu {
+                Button("Wyślij próbne powiadomienie") { notifications?.postTest() }
+            }
+        }
+        if let launchAtLogin, launchAtLogin.isAvailable {
+            Button {
+                launchAtLogin.toggle()
+            } label: {
+                Image(systemName: launchAtLogin.isEnabled ? "power.circle.fill" : "power.circle")
+            }
+            .help(launchAtLoginHelp(launchAtLogin))
+        }
+        Button("Odśwież") { store.refresh() }
+            .keyboardShortcut("r")
+        Button("Zakończ") { NSApplication.shared.terminate(nil) }
+            .keyboardShortcut("q")
     }
 }
 

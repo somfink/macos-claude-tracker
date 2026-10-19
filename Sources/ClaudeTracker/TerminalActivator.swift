@@ -13,15 +13,38 @@ enum TerminalActivator {
     /// The tab walk in progress; a newer click replaces it so two walks never switch tabs at once.
     private static var navigation: Task<Void, Never>?
 
-    /// Warp: show its window (quake window included) and switch to the session's tab.
-    /// Otherwise launch the first installed terminal.
-    static func focus(_ tab: (target: TabTarget, others: [TabTarget])) {
+    /// Finds the terminal app the session runs in from its process ancestry.
+    /// iTerm2 / Terminal.app: select the tab by tty. Another app: bring it forward.
+    /// Warp, or a terminal that cannot be told: show Warp's window (quake window included) and
+    /// switch to the session's tab; without Warp running, launch the first installed terminal.
+    static func focus(sessionPid: Int32, tab: (target: TabTarget, others: [TabTarget])) {
         closeMenuPanel()
         navigation?.cancel()
+        let host = TerminalHost.app(
+            hosting: sessionPid,
+            node: SystemProcessTable.node,
+            bundleIdentifier: { Bundle(path: $0)?.bundleIdentifier }
+        )
         navigation = Task {
-            if await WarpNavigator.focus(tab.target, among: tab.others) { return }
+            guard let host, host != .warp else {
+                // Warp, or a terminal that could not be identified: unchanged Warp behaviour.
+                if await WarpNavigator.focus(tab.target, among: tab.others) { return }
+                guard !Task.isCancelled else { return }
+                launchFallback()
+                return
+            }
+            if await ScriptedTerminal.select(sessionPid: sessionPid, in: host) { return }
             guard !Task.isCancelled else { return }
-            launchFallback()
+            bringForward(host)
+        }
+    }
+
+    private static func bringForward(_ app: TerminalApp) {
+        guard let identifier = app.bundleIdentifier else { return }
+        if let running = NSRunningApplication.runningApplications(withBundleIdentifier: identifier).first {
+            running.activate()
+        } else if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier) {
+            NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
         }
     }
 

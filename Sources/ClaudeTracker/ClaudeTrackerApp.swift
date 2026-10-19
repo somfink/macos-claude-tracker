@@ -24,7 +24,7 @@ struct ClaudeTrackerApp: App {
         let openSession: (String) -> Void = { [weak store] id in
             guard let store, let session = store.session(withId: id) else { return }
             store.markRead(id)
-            TerminalActivator.focus(store.tabTargets(of: session))
+            TerminalActivator.focus(sessionPid: session.pid, tab: store.tabTargets(of: session))
         }
         store.onEvents = { [weak store, weak notifications] events in
             guard let store, let notifications else { return }

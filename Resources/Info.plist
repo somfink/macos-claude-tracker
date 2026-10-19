@@ -10,6 +10,8 @@
 	<string>dev.claude-tracker.app</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Claude Tracker switches iTerm2 and Terminal to the tab of the session you click.</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>CFBundleName</key>
