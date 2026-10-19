@@ -1,0 +1,14 @@
+.build/
+.swiftpm/
+dist/
+*.app
+.DS_Store
+
+# Local configuration and secrets never belong in the repo
+.env
+.env.*
+
+# Xcode
+DerivedData/
+xcuserdata/
+*.xcuserstate
