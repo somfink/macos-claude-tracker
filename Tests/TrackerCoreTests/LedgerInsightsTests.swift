@@ -109,6 +109,77 @@ struct LedgerInsightsTests {
         #expect(ledger.finishedTranscripts(on: date("2026-10-18T12:00:00Z"), calendar: calendar, liveSessionIds: []).isEmpty)
     }
 
+    /// What Claude Code writes at the top of the transcript a `/clear` starts; a named
+    /// session carries its name over.
+    private func clearLines(at iso: String, cwd: String, name: String = "x") -> String {
+        """
+        {"type":"custom-title","customTitle":"\(name)"}
+        {"type":"user","cwd":"\(cwd)","entrypoint":"cli","timestamp":"\(iso)","message":{"role":"user","content":"<local-command-caveat>Caveat</local-command-caveat>"}}
+        {"type":"user","cwd":"\(cwd)","entrypoint":"cli","timestamp":"\(iso)","message":{"role":"user","content":"<command-name>/clear</command-name>\\n<command-message>clear</command-message>"}}
+        """
+    }
+
+    @Test func conversationsEndedByClearAreMarked() throws {
+        let (config, root) = try setUp()
+        // a → /clear → b → /clear → live c, all in Beta; d ended on its own earlier; e is elsewhere.
+        try config.write("projects/-p-Beta/d.jsonl", line(id: "d", day: "2026-10-18", cwd: "/p/Beta") + "\n")
+        try config.write("projects/-p-Beta/a.jsonl", line(id: "a", day: "2026-10-18", cwd: "/p/Beta") + "\n")
+        try config.write("projects/-p-Beta/b.jsonl", clearLines(at: "2026-10-18T09:00:00.000Z", cwd: "/p/Beta") + "\n"
+            + line(id: "b", day: "2026-10-18", cwd: "/p/Beta") + "\n")
+        try config.write("projects/-p-Beta/c.jsonl", clearLines(at: "2026-10-18T11:00:00.000Z", cwd: "/p/Beta") + "\n")
+        try config.write("projects/-p-Alpha/e.jsonl", line(id: "e", day: "2026-10-18", cwd: "/p/Alpha") + "\n")
+        try touch(config, "projects/-p-Beta/d.jsonl", date("2026-10-18T07:00:00Z"))
+        try touch(config, "projects/-p-Beta/a.jsonl", date("2026-10-18T08:30:00Z"))
+        try touch(config, "projects/-p-Beta/b.jsonl", date("2026-10-18T10:58:00Z"))
+        try touch(config, "projects/-p-Beta/c.jsonl", date("2026-10-18T11:30:00Z"))
+        try touch(config, "projects/-p-Alpha/e.jsonl", date("2026-10-18T10:59:00Z"))
+        let ledger = UsageLedger.empty.updated(roots: [root], calendar: calendar, since: .distantPast)
+
+        let finished = ledger.finishedTranscripts(on: date("2026-10-18T12:00:00Z"), calendar: calendar, liveSessionIds: ["c"])
+        let cleared = Dictionary(uniqueKeysWithValues: finished.map { ($0.sessionId, $0.endedByClear) })
+
+        #expect(cleared == ["a": true, "b": true, "d": false, "e": false])
+        #expect(ledger.files.values.first { $0.sessionId == "c" }?.startedByClearAt == date("2026-10-18T11:00:00Z"))
+        #expect(ledger.files.values.first { $0.sessionId == "a" }?.startedByClearAt == nil)
+    }
+
+    /// Two terminals in one folder: the named session's `/clear` belongs to the conversation
+    /// with the same name, even when the other one went quiet later.
+    @Test func clearPrefersTheConversationWithTheSameName() throws {
+        let (config, root) = try setUp()
+        try config.write("projects/-p-Beta/plan.jsonl", #"{"type":"custom-title","customTitle":"ACME-1 plan"}"# + "\n"
+            + line(id: "p", day: "2026-10-18", cwd: "/p/Beta") + "\n")
+        try config.write("projects/-p-Beta/other.jsonl", line(id: "o", day: "2026-10-18", cwd: "/p/Beta") + "\n")
+        // Renamed after the clear: the name it carried over is what links it.
+        try config.write("projects/-p-Beta/next.jsonl", clearLines(at: "2026-10-18T09:00:00.000Z", cwd: "/p/Beta", name: "ACME-1 plan") + "\n"
+            + #"{"type":"custom-title","customTitle":"ACME-2 nowy temat"}"# + "\n")
+        try touch(config, "projects/-p-Beta/plan.jsonl", date("2026-10-18T08:50:00Z"))
+        try touch(config, "projects/-p-Beta/other.jsonl", date("2026-10-18T08:55:00Z"))
+        try touch(config, "projects/-p-Beta/next.jsonl", date("2026-10-18T09:10:00Z"))
+        let ledger = UsageLedger.empty.updated(roots: [root], calendar: calendar, since: .distantPast)
+
+        let finished = ledger.finishedTranscripts(on: date("2026-10-18T12:00:00Z"), calendar: calendar, liveSessionIds: ["next"])
+
+        #expect(Dictionary(uniqueKeysWithValues: finished.map { ($0.sessionId, $0.endedByClear) }) == ["plan": true, "other": false])
+    }
+
+    /// A scan can catch a new transcript before its `/clear` line is written; the next scan
+    /// must still find it.
+    @Test func clearWrittenAfterTheFirstScanIsStillFound() throws {
+        let (config, root) = try setUp()
+        let lines = clearLines(at: "2026-10-18T09:00:00.000Z", cwd: "/p/Beta", name: "ACME-1 plan")
+            .split(separator: "\n").map(String.init)
+        try config.write("projects/-p-Beta/next.jsonl", lines[0] + "\n")
+        let first = UsageLedger.empty.updated(roots: [root], calendar: calendar, since: .distantPast)
+        #expect(first.files.values.first?.startedByClearAt == nil)
+
+        try config.write("projects/-p-Beta/next.jsonl", lines.joined(separator: "\n") + "\n")
+        let second = first.updated(roots: [root], calendar: calendar, since: .distantPast)
+
+        #expect(second.files.values.first?.startedByClearAt == date("2026-10-18T09:00:00Z"))
+        #expect(second.files.values.first?.nameAtClear == "ACME-1 plan")
+    }
+
     @Test func dailyAndProjectBreakdown() throws {
         let (config, root) = try setUp()
         try config.write("projects/-p-Alpha/s1.jsonl", [

@@ -72,7 +72,7 @@ private struct FinishedRow: View {
             Spacer(minLength: 8)
 
             VStack(alignment: .trailing, spacing: 1) {
-                Text(isCopied ? "Skopiowano" : "zakończona")
+                Text(isCopied ? "Skopiowano" : (session.endedByClear ? "wyczyszczona" : "zakończona"))
                     .font(.caption.weight(.medium))
                     .foregroundStyle(isCopied ? AnyShapeStyle(.green) : AnyShapeStyle(.secondary))
                 Text(session.endedAt.formatted(Self.timeFormat))

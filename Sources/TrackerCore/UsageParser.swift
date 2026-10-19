@@ -75,6 +75,57 @@ public enum UsageParser {
         return ChunkInfo(cwd: first?.cwd, entrypoint: first?.entrypoint)
     }
 
+    private static let clearMarker = Data("<command-name>/clear</command-name>".utf8)
+    /// `/clear` is recorded right after a few metadata lines at the top of the new transcript.
+    private static let clearSearchLines = 20
+
+    private struct TimestampLine: Decodable {
+        let type: String?
+        let timestamp: String?
+    }
+
+    public struct ClearStart: Equatable, Sendable {
+        public let at: Date
+        /// The session name written above the `/clear`: the one it had before, carried over.
+        public let sessionName: String?
+    }
+
+    /// When the transcript was started by `/clear` (Claude Code then switches the same process
+    /// to a fresh session), the time of that command; nil for any other start. `data` must be
+    /// the beginning of the file.
+    public static func clearStart(in data: Data) -> ClearStart? {
+        let decoder = JSONDecoder()
+        let head = data
+            .split(separator: UInt8(ascii: "\n"), maxSplits: clearSearchLines, omittingEmptySubsequences: true)
+            .prefix(clearSearchLines)
+        guard let index = head.firstIndex(where: { line in
+            line.range(of: clearMarker) != nil
+                && (try? decoder.decode(TimestampLine.self, from: Data(line)))?.type == "user"
+        }),
+            let line = try? decoder.decode(TimestampLine.self, from: Data(head[index])),
+            let at = line.timestamp.flatMap(TimestampParser().date)
+        else { return nil }
+        let above = head[head.startIndex..<index].reduce(into: Data()) { $0.append(contentsOf: $1); $0.append(UInt8(ascii: "\n")) }
+        return ClearStart(at: at, sessionName: customTitle(in: above))
+    }
+
+    private static let customTitleMarker = Data(#""type":"custom-title""#.utf8)
+
+    private struct CustomTitleLine: Decodable {
+        let customTitle: String?
+    }
+
+    /// The newest name the user gave the session (`/rename`) within `data`, if any line sets one.
+    public static func customTitle(in data: Data) -> String? {
+        guard data.range(of: customTitleMarker) != nil else { return nil }
+        let decoder = JSONDecoder()
+        return data
+            .split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true)
+            .filter { $0.range(of: customTitleMarker) != nil }
+            .compactMap { try? decoder.decode(CustomTitleLine.self, from: Data($0)).customTitle }
+            .last
+    }
+
     private static func decodeLine(_ line: Data.SubSequence, decoder: JSONDecoder) -> Line? {
         guard line.range(of: assistantMarker) != nil, line.range(of: usageMarker) != nil else { return nil }
         return try? decoder.decode(Line.self, from: Data(line))

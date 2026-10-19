@@ -20,11 +20,18 @@ public struct UsageLedger: Codable, Equatable, Sendable {
         public let modified: Date
         public let offset: Int64
         public let records: [String: UsageRecord]
+        /// Set when the transcript begins with `/clear`: the moment the previous conversation
+        /// in that terminal was cleared away.
+        public let startedByClearAt: Date?
+        /// For a transcript started by `/clear`, the session name carried over from before it.
+        public let nameAtClear: String?
+        /// The user's newest name for the session.
+        public let customTitle: String?
     }
 
     /// Bump when `FileEntry` gains data that older ledgers lack: they are discarded and
     /// rebuilt by one full scan.
-    public static let currentVersion = 4
+    public static let currentVersion = 6
 
     public let version: Int
     /// Keyed by canonical transcript path.
@@ -91,16 +98,46 @@ public struct UsageLedger: Codable, Equatable, Sendable {
     /// newest first. Covers sessions that ended while the tracker was not running too.
     public func finishedTranscripts(on now: Date, calendar: Calendar, liveSessionIds: Set<String>) -> [FinishedTranscript] {
         let costs = attributedCosts()
+        let cleared = clearedPaths
         return files
             .filter { !$0.value.isSubagent && $0.value.isInteractive && !liveSessionIds.contains($0.value.sessionId) }
             .filter { calendar.isDate($0.value.modified, inSameDayAs: now) }
             .map { path, entry in
                 FinishedTranscript(
                     sessionId: entry.sessionId, account: entry.account, path: path,
-                    cwd: entry.cwd, modified: entry.modified, cost: costs[entry.sessionId]
+                    cwd: entry.cwd, modified: entry.modified, cost: costs[entry.sessionId],
+                    endedByClear: cleared.contains(path)
                 )
             }
             .sorted { $0.modified > $1.modified }
+    }
+
+    /// Small leeway for the old transcript's last write landing just after the `/clear`.
+    private static let clearSlack: TimeInterval = 5
+
+    /// Transcripts a `/clear` replaced. Nothing in the new transcript points at the old one, so
+    /// each transcript that starts with `/clear` claims the most recently written conversation
+    /// in the same account and folder that went quiet before it, preferring one with the same
+    /// session name when the session has one. Chains (`a → b → c`) resolve one link at a time;
+    /// with two unnamed terminals in one folder the label may land on the other one.
+    var clearedPaths: Set<String> {
+        let conversations = files.filter { !$0.value.isSubagent && $0.value.isInteractive }
+        let clears = conversations
+            .compactMap { path, entry in entry.startedByClearAt.map { (path: path, entry: entry, at: $0) } }
+            .sorted { $0.at < $1.at }
+        return clears.reduce(into: Set<String>()) { cleared, clear in
+            let previous = conversations
+                .filter { path, entry in
+                    path != clear.path && !cleared.contains(path)
+                        && entry.account == clear.entry.account && entry.cwd == clear.entry.cwd
+                        && entry.modified <= clear.at.addingTimeInterval(Self.clearSlack)
+                }
+            let sameName = clear.entry.nameAtClear.map { name in previous.filter { $0.value.customTitle == name } } ?? [:]
+            let candidates = sameName.isEmpty ? previous : sameName
+            if let match = candidates.max(by: { $0.value.modified < $1.value.modified }) {
+                cleared.insert(match.key)
+            }
+        }
     }
 
     /// One record per message id across files (resumed sessions copy history),
@@ -129,18 +166,28 @@ public struct UsageLedger: Codable, Equatable, Sendable {
             return FileEntry(
                 account: account, sessionId: file.sessionId, isSubagent: file.isSubagent, cwd: existing?.cwd,
                 entrypoint: existing?.entrypoint, modified: file.modified,
-                offset: existing?.offset ?? 0, records: existing?.records ?? [:]
+                offset: existing?.offset ?? 0, records: existing?.records ?? [:],
+                startedByClearAt: existing?.startedByClearAt, nameAtClear: existing?.nameAtClear,
+                customTitle: existing?.customTitle
             )
         }
         let known = UsageParser.ChunkInfo(cwd: existing?.cwd, entrypoint: existing?.entrypoint)
         let chunk = Self.read(file.url, from: start, calendar: calendar, known: known)
+        // `/clear` sits in the first lines. Read from the top, the first chunk already holds them;
+        // a scan may also have caught them half-written, so a young file without one gets its
+        // head checked again on every change until it shows up or the file outgrows it.
+        let recheck = existing != nil && existing?.startedByClearAt == nil && start < Self.clearHeadBytes
+        let clear = chunk.clearStart ?? (recheck ? Self.clearStart(of: file.url) : nil)
         let merged = (existing?.records ?? [:]).merging(chunk.records) { current, candidate in
             candidate.cost > current.cost ? candidate : current
         }
         return FileEntry(
             account: account, sessionId: file.sessionId, isSubagent: file.isSubagent,
             cwd: chunk.info.cwd ?? existing?.cwd, entrypoint: chunk.info.entrypoint ?? existing?.entrypoint,
-            modified: file.modified, offset: start + chunk.consumed, records: merged
+            modified: file.modified, offset: start + chunk.consumed, records: merged,
+            startedByClearAt: existing?.startedByClearAt ?? clear?.at,
+            nameAtClear: existing?.nameAtClear ?? clear?.sessionName,
+            customTitle: chunk.customTitle ?? existing?.customTitle
         )
     }
 
@@ -148,13 +195,29 @@ public struct UsageLedger: Codable, Equatable, Sendable {
         let records: [String: UsageRecord]
         let consumed: Int64
         let info: UsageParser.ChunkInfo
+        /// Only looked for when reading from the top of the file.
+        let clearStart: UsageParser.ClearStart?
+        let customTitle: String?
+    }
+
+    /// The `/clear` line follows a handful of metadata lines; past this size a transcript that
+    /// has not shown one never will.
+    private static let clearHeadBytes = 256 * 1024
+
+    private static func clearStart(of url: URL) -> UsageParser.ClearStart? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let head = try? handle.read(upToCount: clearHeadBytes),
+              let lastNewline = head.lastIndex(of: UInt8(ascii: "\n"))
+        else { return nil }
+        return UsageParser.clearStart(in: Data(head[head.startIndex...lastNewline]))
     }
 
     /// Parses complete lines from `offset`; returns records keyed by message id, the
     /// number of bytes consumed (a trailing partial line is left for the next pass) and where
     /// and how the newest line ran (cwd, entrypoint).
     private static func read(_ url: URL, from offset: Int64, calendar: Calendar, known: UsageParser.ChunkInfo) -> Chunk {
-        let nothing = Chunk(records: [:], consumed: 0, info: UsageParser.ChunkInfo(cwd: nil, entrypoint: nil))
+        let nothing = Chunk(records: [:], consumed: 0, info: UsageParser.ChunkInfo(cwd: nil, entrypoint: nil), clearStart: nil, customTitle: nil)
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nothing }
         defer { try? handle.close() }
         guard (try? handle.seek(toOffset: UInt64(offset))) != nil else { return nothing }
@@ -163,6 +226,8 @@ public struct UsageLedger: Codable, Equatable, Sendable {
         var consumed: Int64 = 0
         var cwd: String?
         var entrypoint: String?
+        var customTitle: String?
+        var clearStart: UsageParser.ClearStart?
         var carry = Data()
         while let chunk = try? handle.read(upToCount: readChunkBytes), !chunk.isEmpty {
             let buffer = carry + chunk
@@ -171,6 +236,10 @@ public struct UsageLedger: Codable, Equatable, Sendable {
                 continue
             }
             let complete = buffer[buffer.startIndex...lastNewline]
+            if offset == 0, consumed == 0 {
+                clearStart = UsageParser.clearStart(in: Data(complete))
+            }
+            customTitle = UsageParser.customTitle(in: Data(complete)) ?? customTitle
             let parsed = UsageParser.parse(Data(complete), calendar: calendar)
             for record in parsed.records {
                 records[record.messageId] = record
@@ -195,7 +264,7 @@ public struct UsageLedger: Codable, Equatable, Sendable {
             records[record.messageId] = record
         }
         let info = UsageParser.ChunkInfo(cwd: tail.info.cwd ?? cwd, entrypoint: tail.info.entrypoint ?? entrypoint)
-        return Chunk(records: records, consumed: consumed, info: info)
+        return Chunk(records: records, consumed: consumed, info: info, clearStart: clearStart, customTitle: customTitle)
     }
 
     private static func transcripts(in root: ConfigRoot, since: Date) -> [Transcript] {
@@ -241,4 +310,6 @@ public struct FinishedTranscript: Equatable, Sendable {
     public let cwd: String?
     public let modified: Date
     public let cost: Double?
+    /// The conversation ended because the user ran `/clear`, not because the terminal closed.
+    public let endedByClear: Bool
 }

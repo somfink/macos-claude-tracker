@@ -26,7 +26,9 @@ Everything runs locally. The app never connects to the network.
   animated mascot, its title, last answer, cost and context usage.
 - **Tabs**:
   - active sessions;
-  - sessions finished today (click copies a `claude --resume` command);
+  - sessions finished today (click copies a `claude --resume` command). A conversation you
+    `/clear`ed is listed as "cleared": Claude Code starts a fresh session in the same terminal,
+    and the old conversation can still be resumed;
   - monthly costs (daily chart, top projects, month-end projection).
 - **Notifications**: "✅ finished", "⏳ needs your input", and rate limit alerts at 80 % / 90 %.
   Clicking one takes you to the session.

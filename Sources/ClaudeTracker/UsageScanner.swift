@@ -14,6 +14,8 @@ struct FinishedSession: Identifiable, Equatable, Sendable {
     let summary: String?
     let endedAt: Date
     let cost: Double?
+    /// Ended by `/clear` in a terminal that may still be running, rather than by closing it.
+    let endedByClear: Bool
 
     var resumeCommand: String? {
         cwd.flatMap { ResumeCommand.make(account: account, cwd: $0, sessionId: sessionId) }
@@ -80,7 +82,8 @@ actor UsageScanner {
             title: summary.aiTitle ?? project,
             summary: summary.lastAssistantText.map { SummaryText.clean($0) },
             endedAt: transcript.modified,
-            cost: transcript.cost
+            cost: transcript.cost,
+            endedByClear: transcript.endedByClear
         )
     }
 
